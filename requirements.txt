@@ -1,0 +1,6 @@
+sshtunnel
+mysql-connector-python
+python-dotenv
+pandas
+pyodbc
+sqlalchemy
