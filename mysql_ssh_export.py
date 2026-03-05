@@ -63,10 +63,11 @@ def main():
     now = now_dt.strftime('%Y-%m-%d %H:%M:%S')
     csv_filename = CSV_OUTPUT_TEMPLATE.replace('%datetime%', now_dt.strftime('%Y%m%d_%H%M%S'))
     last_run = get_last_run()
+    merchant_filter = "merchant_account_id > 8"
     if last_run:
-        query = f"SELECT * FROM transaction_report WHERE updated_at > '{last_run}' AND updated_at <= '{now}'"
+        query = f"SELECT * FROM transaction_report WHERE updated_at > '{last_run}' AND updated_at <= '{now}' AND {merchant_filter}"
     else:
-        query = f"SELECT * FROM transaction_report WHERE updated_at <= '{now}'"
+        query = f"SELECT * FROM transaction_report WHERE updated_at <= '{now}' AND {merchant_filter}"
     try:
         with SSHTunnelForwarder(
             (SSH_HOST, SSH_PORT),

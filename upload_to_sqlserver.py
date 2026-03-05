@@ -1,4 +1,4 @@
-        # ...existing code...
+# ...existing code...
 import os
 import pandas as pd
 import shutil
@@ -53,10 +53,25 @@ def upload_csv_to_sqlserver(env):
             print(f"transaction_uuid column not found in {csv_file}, skipping.")
             continue
         columns = df.columns.tolist()
-        # Auto-clean numeric columns
         numeric_cols = ['amount', 'refunded_amount']
         integer_cols = ['merchant_account_id', 'mid', 'amount', 'refunded_amount', 'source_first6', 'payment_method_details']
-        
+
+        # Aggregate voids for daily summary
+        if 'transaction_type' in df.columns:
+            voids = df[df['transaction_type'] == 'void']
+            void_sum = voids['amount'].sum() / 100.0 if not voids.empty else 0.0
+            voidcount = voids['amount'].apply(lambda x: x > 0).sum() if not voids.empty else 0
+        else:
+            void_sum = 0.0
+            voidcount = 0
+
+        # Exclude voids from amount_sum to avoid double counting
+        non_voids = df[df['transaction_type'] != 'void'] if 'transaction_type' in df.columns else df
+        amount_sum = non_voids['amount'].sum() / 100.0 if not non_voids.empty else 0.0
+        amount_count = non_voids['amount'].apply(lambda x: x > 0).sum() if not non_voids.empty else 0
+        refund_sum = non_voids['refunded_amount'].sum() / 100.0 if 'refunded_amount' in non_voids.columns and not non_voids.empty else 0.0
+        refund_count = non_voids['refunded_amount'].apply(lambda x: x > 0).sum() if 'refunded_amount' in non_voids.columns and not non_voids.empty else 0
+
         for col in columns:
             if col in integer_cols:
                 # Convert to integer, handling decimals and empty values
@@ -119,6 +134,7 @@ def upload_csv_to_sqlserver(env):
         
         print(f"Starting batch processing of {total_rows} rows...")
         
+        duplicate_uuids = []  # Track duplicate transaction_uuid values (move this above try block)
         try:
             for start_idx in range(0, total_rows, batch_size):
                 end_idx = min(start_idx + batch_size, total_rows)
@@ -152,9 +168,15 @@ def upload_csv_to_sqlserver(env):
                             sql_values.append(converted_val)
                         
                         cursor.execute(f"INSERT INTO Landing_Operational.dbo.CLOVERTRANS ({col_names}) VALUES ({col_placeholders})", *sql_values)
-                        
                     except Exception as row_error:
-                        print(f"Error processing row {start_idx + row_idx + 1}: {row_error}")
+                        # Check for duplicate key error
+                        if hasattr(row_error, 'args') and row_error.args and 'duplicate key' in str(row_error.args[0]).lower():
+                            uuid_val = row['transaction_uuid'] if 'transaction_uuid' in row else None
+                            print(f"Duplicate transaction_uuid ignored: {uuid_val}")
+                            if uuid_val:
+                                duplicate_uuids.append(uuid_val)
+                        else:
+                            print(f"Error processing row {start_idx + row_idx + 1}: {row_error}")
                         continue
                 
                 # Commit each batch
@@ -170,6 +192,12 @@ def upload_csv_to_sqlserver(env):
             os.makedirs(archive_dir)
         shutil.move(csv_file, os.path.join(archive_dir, os.path.basename(csv_file)))
         print(f"Uploaded and archived {csv_file}")
+        if duplicate_uuids:
+            print(f"\nSummary: {len(duplicate_uuids)} duplicate transaction_uuid(s) were ignored and not processed:")
+            for dupe in duplicate_uuids:
+                print(f"  - {dupe}")
+        else:
+            print("\nNo duplicate transaction_uuid records were found in this file.")
     cursor.close()
     conn.close()
 

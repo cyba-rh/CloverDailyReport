@@ -1,10 +1,10 @@
 -- Aggregate CLOVERTRANS data into CLOVERDAILY table
 USE Landing_Operational;
-GO
+
 
 -- Clear existing data (remove this line for incremental updates)
 TRUNCATE TABLE dbo.CLOVERDAILY;
-GO
+
 
 WITH MerchantFirstDates AS (
     -- Step 1: Calculate first transaction dates per MID (across all time)
@@ -15,6 +15,7 @@ WITH MerchantFirstDates AS (
     FROM dbo.CLOVERTRANS
     WHERE transaction_date IS NOT NULL
         AND mid IS NOT NULL
+        AND CAST(transaction_date AS DATE) < CAST(GETDATE() AS DATE)
     GROUP BY mid
 ),
 DailyAggregates AS (
@@ -23,14 +24,18 @@ DailyAggregates AS (
         CAST(transaction_date AS DATE) AS day,
         mid,
         merchant_name,
-        SUM(CASE WHEN status = 'succeeded' THEN amount/100.0 ELSE 0 END) AS amount_sum,
-        COUNT(CASE WHEN status = 'succeeded' AND amount > 0 THEN 1 END) AS amount_count,
-        SUM(CASE WHEN status = 'succeeded' THEN refunded_amount/100.0 ELSE 0 END) AS refund_sum,
-        COUNT(CASE WHEN status = 'succeeded' AND refunded_amount > 0 THEN 1 END) AS refund_count
+        MAX(SourceAccountCreated) AS SourceAccountCreated,
+        SUM(CASE WHEN status = 'succeeded' AND transaction_type = 'charge' THEN amount/100.0 ELSE 0 END) AS amount_sum,
+        COUNT(CASE WHEN status = 'succeeded' AND transaction_type = 'charge' AND amount > 0 THEN 1 END) AS amount_count,
+        SUM(CASE WHEN status = 'succeeded' AND transaction_type = 'refund' THEN refunded_amount/100.0 ELSE 0 END) AS refund_sum,
+        COUNT(CASE WHEN status = 'succeeded' AND transaction_type = 'refund' AND refunded_amount > 0 THEN 1 END) AS refund_count,
+        SUM(CASE WHEN status = 'succeeded' AND transaction_type = 'void' THEN amount/100.0 ELSE 0 END) AS void_sum,
+        COUNT(CASE WHEN status = 'succeeded' AND transaction_type = 'void' AND amount > 0 THEN 1 END) AS voidcount
     FROM dbo.CLOVERTRANS
     WHERE transaction_date IS NOT NULL
         AND mid IS NOT NULL 
         AND merchant_name IS NOT NULL
+        AND CAST(transaction_date AS DATE) < CAST(GETDATE() AS DATE)
     GROUP BY 
         CAST(transaction_date AS DATE),
         mid,
@@ -42,11 +47,15 @@ DailyTotals AS (
         da.day,
         da.mid,
         da.merchant_name,
+        da.SourceAccountCreated,
         da.amount_sum,
         da.amount_count,
         da.refund_sum,
         da.refund_count,
-        (da.amount_sum - da.refund_sum) AS total,
+        da.void_sum,
+        da.voidcount,
+            (da.amount_sum - da.refund_sum) AS total,
+            (da.amount_count + da.refund_count) AS totalcount,
         mfd.first_transaction_date,
         mfd.first_business_transaction_date
     FROM DailyAggregates da
@@ -58,11 +67,15 @@ RunningTotals AS (
         day,
         mid,
         merchant_name,
+        SourceAccountCreated,
         amount_sum,
         amount_count,
         refund_sum,
         refund_count,
+        void_sum,
+        voidcount,
         total,
+        totalcount,
         first_transaction_date,
         first_business_transaction_date,
         -- MTD: Sum all totals for the same MID from start of current month to current day
@@ -84,11 +97,15 @@ INSERT INTO dbo.CLOVERDAILY (
     day, 
     mid, 
     merchant_name, 
+    SourceAccountCreated,
     amount_sum,
     amount_count,
     refund_sum,
     refund_count,
+    void_sum,
+    voidcount,
     total,
+    totalcount,
     first_transaction_date,
     first_business_transaction_date,
     mtd_total, 
@@ -98,11 +115,15 @@ SELECT
     day,
     mid,
     merchant_name,
+    SourceAccountCreated,
     ROUND(amount_sum, 2) AS amount_sum,
     amount_count,
     ROUND(refund_sum, 2) AS refund_sum,
     refund_count,
+    ROUND(void_sum, 2) AS void_sum,
+    voidcount,
     ROUND(total, 2) AS total,
+    totalcount,
     first_transaction_date,
     first_business_transaction_date,
     ROUND(mtd_total, 2) AS mtd_total,
@@ -120,6 +141,8 @@ SELECT
     SUM(amount_count) AS total_amount_transactions,
     SUM(refund_sum) AS total_refunds,
     SUM(refund_count) AS total_refund_transactions,
+    SUM(void_sum) AS total_voids,
+    SUM(voidcount) AS total_void_transactions,
     SUM(total) AS net_total,
     MIN(first_transaction_date) AS earliest_transaction,
     MIN(first_business_transaction_date) AS earliest_business_transaction

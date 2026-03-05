@@ -9,9 +9,20 @@ SELECT @LastProcessedDate = ISNULL(MAX(day), '1900-01-01') FROM dbo.CLOVERDAILY;
 
 PRINT 'Processing data from: ' + CAST(@LastProcessedDate AS VARCHAR(20));
 
--- Delete existing records for dates we're about to reprocess (in case of updates)
-DELETE FROM dbo.CLOVERDAILY 
-WHERE day >= @LastProcessedDate;
+
+-- Identify (day, mid) pairs to be updated
+WITH ToUpdate AS (
+    SELECT DISTINCT CAST(transaction_date AS DATE) AS day, mid
+    FROM dbo.CLOVERTRANS
+    WHERE transaction_date IS NOT NULL
+        AND mid IS NOT NULL
+        AND merchant_name IS NOT NULL
+        AND CAST(transaction_date AS DATE) >= @LastProcessedDate
+)
+DELETE d
+FROM dbo.CLOVERDAILY d
+INNER JOIN ToUpdate t
+    ON d.day = t.day AND d.mid = t.mid;
 
 WITH MerchantFirstDates AS (
     -- Step 1: Calculate first transaction dates per MID (across all time)
@@ -30,10 +41,13 @@ DailyAggregates AS (
         CAST(transaction_date AS DATE) AS day,
         mid,
         merchant_name,
-        SUM(CASE WHEN status = 'succeeded' THEN amount/100.0 ELSE 0 END) AS amount_sum,
-        COUNT(CASE WHEN status = 'succeeded' AND amount > 0 THEN 1 END) AS amount_count,
-        SUM(CASE WHEN status = 'succeeded' THEN refunded_amount/100.0 ELSE 0 END) AS refund_sum,
-        COUNT(CASE WHEN status = 'succeeded' AND refunded_amount > 0 THEN 1 END) AS refund_count
+        MAX(SourceAccountCreated) AS SourceAccountCreated,
+        SUM(CASE WHEN status = 'succeeded' AND transaction_type = 'charge' THEN amount/100.0 ELSE 0 END) AS amount_sum,
+        COUNT(CASE WHEN status = 'succeeded' AND transaction_type = 'charge' AND amount > 0 THEN 1 END) AS amount_count,
+        SUM(CASE WHEN status = 'succeeded' AND transaction_type = 'refund' THEN refunded_amount/100.0 ELSE 0 END) AS refund_sum,
+        COUNT(CASE WHEN status = 'succeeded' AND transaction_type = 'refund' AND refunded_amount > 0 THEN 1 END) AS refund_count,
+        SUM(CASE WHEN status = 'succeeded' AND transaction_type = 'void' THEN amount/100.0 ELSE 0 END) AS void_sum,
+        COUNT(CASE WHEN status = 'succeeded' AND transaction_type = 'void' AND amount > 0 THEN 1 END) AS voidcount
     FROM dbo.CLOVERTRANS
     WHERE transaction_date IS NOT NULL
         AND mid IS NOT NULL 
@@ -50,11 +64,15 @@ DailyTotals AS (
         da.day,
         da.mid,
         da.merchant_name,
+        da.SourceAccountCreated,
         da.amount_sum,
         da.amount_count,
         da.refund_sum,
         da.refund_count,
+        da.void_sum,
+        da.voidcount,
         (da.amount_sum - da.refund_sum) AS total,
+        (da.amount_count + da.refund_count) AS totalcount,
         mfd.first_transaction_date,
         mfd.first_business_transaction_date
     FROM DailyAggregates da
@@ -62,12 +80,12 @@ DailyTotals AS (
 ),
 AllHistoricalData AS (
     -- Step 4: Combine new data with existing historical data for running totals
-    SELECT day, mid, merchant_name, amount_sum, amount_count, refund_sum, refund_count, total, first_transaction_date, first_business_transaction_date
+    SELECT day, mid, merchant_name, SourceAccountCreated, amount_sum, amount_count, refund_sum, refund_count, void_sum, voidcount, total, totalcount, first_transaction_date, first_business_transaction_date
     FROM DailyTotals
     
     UNION ALL
     
-    SELECT day, mid, merchant_name, amount_sum, amount_count, refund_sum, refund_count, total, first_transaction_date, first_business_transaction_date
+    SELECT day, mid, merchant_name, SourceAccountCreated, amount_sum, amount_count, refund_sum, refund_count, void_sum, voidcount, total, totalcount, first_transaction_date, first_business_transaction_date
     FROM dbo.CLOVERDAILY
     WHERE day < @LastProcessedDate
 ),
@@ -77,11 +95,15 @@ RunningTotals AS (
         day,
         mid,
         merchant_name,
+        SourceAccountCreated,
         amount_sum,
         amount_count,
         refund_sum,
         refund_count,
+        void_sum,
+        voidcount,
         total,
+        totalcount,
         first_transaction_date,
         first_business_transaction_date,
         -- MTD: Sum all totals for the same MID from start of current month to current day
@@ -103,11 +125,15 @@ INSERT INTO dbo.CLOVERDAILY (
     day, 
     mid, 
     merchant_name, 
+    SourceAccountCreated,
     amount_sum,
     amount_count,
     refund_sum,
     refund_count,
+    void_sum,
+    voidcount,
     total,
+    totalcount,
     first_transaction_date,
     first_business_transaction_date,
     mtd_total, 
@@ -117,11 +143,15 @@ SELECT
     day,
     mid,
     merchant_name,
+    SourceAccountCreated,
     ROUND(amount_sum, 2) AS amount_sum,
     amount_count,
     ROUND(refund_sum, 2) AS refund_sum,
     refund_count,
+    ROUND(void_sum, 2) AS void_sum,
+    voidcount,
     ROUND(total, 2) AS total,
+    totalcount,
     first_transaction_date,
     first_business_transaction_date,
     ROUND(mtd_total, 2) AS mtd_total,
