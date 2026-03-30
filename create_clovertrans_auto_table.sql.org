@@ -1,5 +1,5 @@
 -- SQL Server CREATE TABLE statement generated from CloverDaily_20260225_145155.csv
-CREATE TABLE [Landing_Operational].[dbo].[CLOVERTRANS_AUTO] (
+CREATE TABLE [Landing_Operational].[dbo].[CLOVERTRANS] (
     [transaction_uuid] VARCHAR(50) PRIMARY KEY,
     [merchant_account_id] INT,
     [merchant_name] VARCHAR(255),
